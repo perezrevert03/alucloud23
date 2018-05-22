@@ -1,0 +1,116 @@
+---
+#
+#  ARGON: An Infrastructure Modeling Tool for Cloud Provisioning
+#  Project developed by Julio Sandobalin, 2017 
+#  julio.sandobalin@epn.edu.ec
+#  Playbook tested with Ansible 2.4 on Amazon Web Services
+# 
+- hosts: localhost 
+  connection: local  
+  gather_facts: no    
+  vars:  
+    #your region  
+    region: eu-west-1
+    #your key
+    key: kp-ireland 
+  tasks:
+  - name: create security group SG01alucloud23
+    ec2_group:
+      region: "{{ region }}"
+      name: SG01alucloud23  
+      description: Group for Load Balancer
+      rules:
+      - proto: tcp
+        from_port: 80  
+        to_port: 9090  
+        cidr_ip: 0.0.0.0/0
+      rules_egress:
+      - proto: all
+        cidr_ip: 0.0.0.0/0
+    register: SG01alucloud23
+  - name: create security group SG02alucloud23
+    ec2_group:
+      region: "{{ region }}"
+      name: SG02alucloud23  
+      description: Group for Load Balancer
+      rules:
+      - proto: tcp
+        from_port: 443  
+        to_port: 443  
+        cidr_ip: 0.0.0.0/0
+      - proto: tcp
+        from_port: 9090  
+        to_port: 9090  
+        cidr_ip: 0.0.0.0/0
+      - proto: tcp
+        from_port: 22  
+        to_port: 22  
+        cidr_ip: 0.0.0.0/0
+      rules_egress:
+      - proto: all
+        cidr_ip: 0.0.0.0/0
+    register: SG02alucloud23
+  - name: EC2 basic provisioning VM02alucloud23
+    ec2:
+      region: "{{ region }}"  
+      key_name: "{{ key }}"  
+      instance_type: t2.micro  
+      image: ami-07ffadedb8becb475
+      instance_tags:
+        Name: VM02alucloud23
+      exact_count: 2
+      count_tag: 
+        Name: VM02alucloud23
+      group: SG02alucloud23
+      zone: eu-west-1b
+      wait: yes 
+    register: VM02alucloud23
+  - action:
+      region: "{{ region }}"
+      module: ec2_instance_facts
+      filters:
+        "tag:Name": VM02alucloud23
+    register: ec2_facts
+  - action:
+      module: debug
+      msg: "{{ item.0 }} --> {{ item.1 }}"
+    with_together:
+      - "{{ ec2_facts.instances | map(attribute='tags.Name')|list }}"
+      - "{{ ec2_facts.instances | map(attribute='public_dns_name')|list }}"
+  - name: create load balancer LB01alucloud23
+    ec2_elb_lb:
+      region: "{{ region }}"
+      name: LB01alucloud23
+      state: present
+      security_group_names:
+        - SG01alucloud23	
+      zones:
+        - eu-west-1b 
+      health_check:
+        ping_protocol: tcp
+        ping_port: 9090
+        response_timeout: 8
+        interval: 40
+        unhealthy_threshold: 3
+        healthy_threshold: 9
+      listeners:
+      - protocol: tcp
+        load_balancer_port: 80
+        instance_port: 9090
+    register: LB01alucloud23
+  - action:
+      region: "{{ region }}"
+      module: ec2_elb_facts
+      names: LB01alucloud23
+    register: elb_facts
+  - action:
+      module: debug
+      msg: "{{ elb_facts.elbs.0.name }} --> {{ elb_facts.elbs.0.dns_name }}"
+  - name: Load balancer registers the Instances
+    local_action:
+      module: ec2_elb
+      state: present
+      region: "{{ region }}"
+      ec2_elbs: LB01alucloud23
+      instance_id: "{{ item }}"
+    with_items: "{{ VM02alucloud23.instance_ids }}"
